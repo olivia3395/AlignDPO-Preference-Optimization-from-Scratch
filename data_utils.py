@@ -1,39 +1,61 @@
 """
 data_utils.py
 -------------
-Load and format Anthropic HH-RLHF (or UltraFeedback) into
-the triplet format DPOTrainer expects:
+Load and format preference datasets into the triplet format DPOTrainer expects:
     {"prompt": str, "chosen": str, "rejected": str}
+
+Datasets
+--------
+- Anthropic/hh-rlhf          (161k human preference pairs, helpfulness+harmlessness)
+- HuggingFaceH4/ultrafeedback_binarized  (61k AI-annotated pairs, higher quality)
 """
 
-from datasets import load_dataset, DatasetDict, Dataset
+from datasets import load_dataset, Dataset
 from typing import Tuple
 
 
 # ── HH-RLHF ──────────────────────────────────────────────────────────────────
 
-def load_hh_rlhf(split_ratio: float = 0.02) -> Tuple[Dataset, Dataset]:
+def load_hh_rlhf(
+    split_ratio: float = 0.02,
+    subset: str = "helpful-base",   # "helpful-base" | "harmless-base" | None (all)
+) -> Tuple[Dataset, Dataset]:
     """
-    Load Anthropic/hh-rlhf from HuggingFace.
-    Returns (train_dataset, eval_dataset).
+    Load Anthropic/hh-rlhf.
+    Raw format: {"chosen": "Human: ...\n\nAssistant: ...", "rejected": "..."}
 
-    The raw data looks like:
-        {"chosen":   "Human: ...\n\nAssistant: ...",
-         "rejected": "Human: ...\n\nAssistant: ..."}
+    subset="helpful-base" is recommended for a first run — cleaner signal,
+    faster convergence than mixing helpful+harmless.
     """
-    ds = load_dataset("Anthropic/hh-rlhf", split="train")
+    if subset:
+        ds = load_dataset("Anthropic/hh-rlhf", data_dir=subset, split="train")
+    else:
+        ds = load_dataset("Anthropic/hh-rlhf", split="train")
 
-    # Small eval split
     split = ds.train_test_split(test_size=split_ratio, seed=42)
-    return split["train"], split["test"]
+    train = split["train"].map(
+        format_dpo_sample,
+        remove_columns=split["train"].column_names,
+        desc="Formatting train",
+    )
+    eval_ = split["test"].map(
+        format_dpo_sample,
+        remove_columns=split["test"].column_names,
+        desc="Formatting eval",
+    )
+
+    # Drop examples where response extraction failed (empty string)
+    train = train.filter(lambda x: len(x["chosen"]) > 10 and len(x["rejected"]) > 10)
+    eval_ = eval_.filter(lambda x: len(x["chosen"]) > 10 and len(x["rejected"]) > 10)
+
+    return train, eval_
 
 
 def _extract_prompt_and_response(text: str) -> Tuple[str, str]:
     """
-    Split 'Human: ...\n\nAssistant: ...' into (prompt, response).
-    The prompt is everything up to (and including) the last 'Assistant:'.
+    Split "Human: ...\n\nAssistant: ..." into (prompt, response).
+    Prompt = everything up to and including the last "Assistant:".
     """
-    # Find last occurrence of "\n\nAssistant:"
     marker = "\n\nAssistant:"
     idx = text.rfind(marker)
     if idx == -1:
@@ -44,47 +66,58 @@ def _extract_prompt_and_response(text: str) -> Tuple[str, str]:
 
 
 def format_dpo_sample(example: dict) -> dict:
-    """
-    Map a raw HH-RLHF example to DPOTrainer format.
-    Both chosen and rejected share the same prompt.
-    """
-    prompt, chosen_response   = _extract_prompt_and_response(example["chosen"])
-    _,      rejected_response = _extract_prompt_and_response(example["rejected"])
-
+    prompt, chosen_resp   = _extract_prompt_and_response(example["chosen"])
+    _,      rejected_resp = _extract_prompt_and_response(example["rejected"])
     return {
         "prompt":   prompt,
-        "chosen":   chosen_response,
-        "rejected": rejected_response,
+        "chosen":   chosen_resp,
+        "rejected": rejected_resp,
     }
 
 
-# ── UltraFeedback (alternative dataset) ──────────────────────────────────────
+# ── UltraFeedback ─────────────────────────────────────────────────────────────
 
 def load_ultrafeedback(split_ratio: float = 0.02) -> Tuple[Dataset, Dataset]:
     """
-    HuggingFaceH4/ultrafeedback_binarized already provides binarized pairs.
-    Columns: prompt, chosen (list of dicts), rejected (list of dicts)
+    HuggingFaceH4/ultrafeedback_binarized.
+    Already binarized; chosen/rejected are lists of message dicts.
+    Higher quality than HH-RLHF but requires slightly different formatting.
     """
     ds = load_dataset("HuggingFaceH4/ultrafeedback_binarized", split="train_prefs")
     split = ds.train_test_split(test_size=split_ratio, seed=42)
-    return split["train"], split["test"]
+
+    train = split["train"].map(
+        format_ultrafeedback_sample,
+        remove_columns=split["train"].column_names,
+        desc="Formatting UltraFeedback train",
+    )
+    eval_ = split["test"].map(
+        format_ultrafeedback_sample,
+        remove_columns=split["test"].column_names,
+        desc="Formatting UltraFeedback eval",
+    )
+    train = train.filter(lambda x: len(x["chosen"]) > 10 and len(x["rejected"]) > 10)
+    eval_ = eval_.filter(lambda x: len(x["chosen"]) > 10 and len(x["rejected"]) > 10)
+    return train, eval_
 
 
 def format_ultrafeedback_sample(example: dict) -> dict:
     """
-    UltraFeedback stores chosen/rejected as conversation lists.
-    Extract the last assistant turn as the response.
+    UltraFeedback stores conversations as:
+        [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
+    We want: prompt = user turn, chosen/rejected = assistant turns.
     """
     def last_assistant(turns):
         for turn in reversed(turns):
-            if turn["role"] == "assistant":
-                return turn["content"]
+            if turn.get("role") == "assistant":
+                return turn.get("content", "")
         return ""
 
-    # Build prompt from all turns except the last assistant
-    prompt_turns = [t for t in example["chosen"][:-1]]
+    # Build prompt from all non-final-assistant turns
+    chosen_turns = example["chosen"]
+    prompt_turns = [t for t in chosen_turns if t.get("role") != "assistant"]
     prompt = "\n".join(
-        f"{'Human' if t['role']=='user' else 'Assistant'}: {t['content']}"
+        f"Human: {t['content']}" if t["role"] == "user" else f"Assistant: {t['content']}"
         for t in prompt_turns
     ) + "\n\nAssistant:"
 
@@ -95,13 +128,13 @@ def format_ultrafeedback_sample(example: dict) -> dict:
     }
 
 
-# ── Quick dataset inspection ──────────────────────────────────────────────────
+# ── Inspect ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    print("Loading HH-RLHF helpful-base...")
     train, val = load_hh_rlhf()
-    sample = format_dpo_sample(train[0])
-    print("=== Sample ===")
-    print("PROMPT:\n",   sample["prompt"][:300])
-    print("CHOSEN:\n",   sample["chosen"][:200])
-    print("REJECTED:\n", sample["rejected"][:200])
-    print(f"\nTrain size: {len(train):,} | Val size: {len(val):,}")
+    s = train[0]
+    print(f"Train: {len(train):,} | Val: {len(val):,}")
+    print(f"\nPROMPT:   {s['prompt'][:200]}")
+    print(f"CHOSEN:   {s['chosen'][:150]}")
+    print(f"REJECTED: {s['rejected'][:150]}")

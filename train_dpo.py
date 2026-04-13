@@ -1,11 +1,17 @@
 """
 train_dpo.py
 ------------
-Full DPO fine-tuning pipeline on Anthropic HH-RLHF.
-Base model: mistralai/Mistral-7B-Instruct-v0.2 (swap freely).
+DPO fine-tuning with QLoRA on Anthropic HH-RLHF (helpful-base subset).
+Base model: mistralai/Mistral-7B-Instruct-v0.2
 
 Usage:
     python train_dpo.py --config configs/dpo_config.yaml
+
+Data flow:
+    Anthropic/hh-rlhf (helpful-base)
+        → format_dpo_sample()
+        → {"prompt", "chosen", "rejected"}
+        → DPOTrainer (TRL)
 """
 
 import os
@@ -15,23 +21,19 @@ import torch
 import wandb
 
 from dataclasses import dataclass, field
-from typing import Optional
-
-from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
-    TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from trl import DPOTrainer, DPOConfig
 
-from data_utils import load_hh_rlhf, format_dpo_sample
+from data_utils import load_hh_rlhf
 from eval import run_eval
 
 
-# ── Config dataclass ──────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 
 @dataclass
 class DPOTrainConfig:
@@ -45,18 +47,20 @@ class DPOTrainConfig:
     lora_alpha: int = 32
     lora_dropout: float = 0.05
     lora_target_modules: list = field(
-        default_factory=lambda: ["q_proj", "k_proj", "v_proj",
-                                  "o_proj", "gate_proj", "up_proj", "down_proj"]
+        default_factory=lambda: [
+            "q_proj", "k_proj", "v_proj",
+            "o_proj", "gate_proj", "up_proj", "down_proj",
+        ]
     )
 
     # DPO
-    beta: float = 0.1          # KL penalty coefficient
+    beta: float = 0.1
     max_prompt_length: int = 512
     max_length: int = 1024
-    loss_type: str = "sigmoid"  # "sigmoid" | "ipo" | "kto_pair"
+    loss_type: str = "sigmoid"   # "sigmoid" | "ipo" | "kto_pair"
 
     # Training
-    output_dir: str = "./outputs"
+    output_dir: str = "./outputs/dpo_mistral"
     num_train_epochs: int = 1
     per_device_train_batch_size: int = 2
     gradient_accumulation_steps: int = 4
@@ -80,16 +84,13 @@ def load_config(path: str) -> DPOTrainConfig:
     return DPOTrainConfig(**raw)
 
 
-# ── Model & tokenizer setup ───────────────────────────────────────────────────
+# ── Model setup ───────────────────────────────────────────────────────────────
 
 def build_model_and_tokenizer(cfg: DPOTrainConfig):
-    """Load base model with optional 4-bit quantization + LoRA adapters."""
-
     tokenizer = AutoTokenizer.from_pretrained(cfg.model_name, use_fast=True)
     tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"   # DPO requires left-padding
 
-    # ── Quantization config (QLoRA) ──────────────────────────────────────────
     bnb_cfg = None
     if cfg.use_4bit:
         bnb_cfg = BitsAndBytesConfig(
@@ -107,11 +108,9 @@ def build_model_and_tokenizer(cfg: DPOTrainConfig):
         trust_remote_code=True,
     )
 
-    # Needed before attaching LoRA to a quantized model
     if cfg.use_4bit:
         model = prepare_model_for_kbit_training(model)
 
-    # ── LoRA adapters ────────────────────────────────────────────────────────
     lora_cfg = LoraConfig(
         r=cfg.lora_r,
         lora_alpha=cfg.lora_alpha,
@@ -130,17 +129,11 @@ def build_model_and_tokenizer(cfg: DPOTrainConfig):
 
 def main(cfg: DPOTrainConfig):
     os.makedirs(cfg.output_dir, exist_ok=True)
-
-    # W&B
     wandb.init(project=cfg.wandb_project, name=cfg.run_name, config=vars(cfg))
 
     # ── Data ─────────────────────────────────────────────────────────────────
-    print("Loading HH-RLHF dataset...")
-    raw_train, raw_eval = load_hh_rlhf(split_ratio=0.02)
-
-    train_dataset = raw_train.map(format_dpo_sample, remove_columns=raw_train.column_names)
-    eval_dataset  = raw_eval.map(format_dpo_sample,  remove_columns=raw_eval.column_names)
-
+    print("Loading Anthropic/hh-rlhf (helpful-base)...")
+    train_dataset, eval_dataset = load_hh_rlhf(split_ratio=0.02, subset="helpful-base")
     print(f"Train: {len(train_dataset):,} | Eval: {len(eval_dataset):,}")
     print("Sample:", train_dataset[0])
 
@@ -148,9 +141,11 @@ def main(cfg: DPOTrainConfig):
     model, tokenizer = build_model_and_tokenizer(cfg)
 
     # ── DPO Trainer ──────────────────────────────────────────────────────────
+    # DPOConfig inherits from TrainingArguments (TRL >= 0.8).
+    # Use eval_strategy (new name) with fallback for older transformers.
     dpo_args = DPOConfig(
         beta=cfg.beta,
-        loss_type=cfg.loss_type,       # swap to "ipo" or "kto_pair" easily
+        loss_type=cfg.loss_type,
         max_prompt_length=cfg.max_prompt_length,
         max_length=cfg.max_length,
         output_dir=cfg.output_dir,
@@ -164,20 +159,32 @@ def main(cfg: DPOTrainConfig):
         logging_steps=cfg.logging_steps,
         save_steps=cfg.save_steps,
         eval_steps=cfg.eval_steps,
-        evaluation_strategy="steps",
-        load_best_model_at_end=True,
+        eval_strategy="steps",          # replaces evaluation_strategy in newer versions
+        save_total_limit=2,
         seed=cfg.seed,
         report_to="wandb",
+        remove_unused_columns=False,    # required for DPO
     )
 
-    trainer = DPOTrainer(
-        model=model,
-        ref_model=None,       # None → TRL auto-creates frozen copy from base
-        args=dpo_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        tokenizer=tokenizer,
-    )
+    # TRL >= 0.9 uses processing_class; fall back to tokenizer for older versions
+    try:
+        trainer = DPOTrainer(
+            model=model,
+            ref_model=None,
+            args=dpo_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            processing_class=tokenizer,
+        )
+    except TypeError:
+        trainer = DPOTrainer(
+            model=model,
+            ref_model=None,
+            args=dpo_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+        )
 
     # ── Train ─────────────────────────────────────────────────────────────────
     print("Starting DPO training...")
@@ -187,15 +194,22 @@ def main(cfg: DPOTrainConfig):
     print(f"Model saved to {cfg.output_dir}")
 
     # ── Eval ─────────────────────────────────────────────────────────────────
-    metrics = run_eval(cfg.output_dir, tokenizer, eval_dataset, n_samples=200)
+    metrics = run_eval(
+        model_path=cfg.output_dir,
+        base_model_name=cfg.model_name,
+        tokenizer=tokenizer,
+        eval_dataset=eval_dataset,
+        beta=cfg.beta,
+        n_samples=200,
+    )
     wandb.log(metrics)
-    print("Final eval metrics:", metrics)
+    print("Final metrics:", metrics)
     wandb.finish()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/dpo_config.yaml")
+    parser.add_argument("--config", default="configs/dpo_config.yaml")
     args = parser.parse_args()
     cfg = load_config(args.config)
     main(cfg)

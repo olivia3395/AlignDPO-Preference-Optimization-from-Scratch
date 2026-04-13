@@ -1,48 +1,66 @@
-<div align="center">
+# DPO Alignment
 
-# 🧠 DPO Alignment
+Fine-tune a causal LLM using **Direct Preference Optimization (DPO)** on
+Anthropic HH-RLHF. Also implements **IPO** and **KTO** from scratch for ablation.
 
-**Fine-tune causal LLMs with Direct Preference Optimization — plus manual IPO & KTO for ablation**
+---
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
-[![PyTorch](https://img.shields.io/badge/PyTorch-2.x-EE4C2C?style=flat-square&logo=pytorch&logoColor=white)](https://pytorch.org/)
-[![License](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](LICENSE)
-[![VRAM](https://img.shields.io/badge/VRAM-≥%2024%20GB-8b5cf6?style=flat-square&logo=nvidia&logoColor=white)]()
-[![W&B](https://img.shields.io/badge/Logging-Weights%20%26%20Biases-FFBE00?style=flat-square&logo=weightsandbiases&logoColor=black)](https://wandb.ai/)
+## Project Structure
 
-<br/>
+| File | Description |
+|------|-------------|
+| `train_dpo.py` | End-to-end DPO training with QLoRA (4-bit NF4 + LoRA) |
+| `dpo_loss.py` | DPO / IPO / KTO loss implemented from scratch |
+| `data_utils.py` | HH-RLHF + UltraFeedback loaders and formatters |
+| `eval.py` | Reward accuracy, reward margin, GPT-4 win-rate judge |
+| `compare_losses.py` | Ablation: DPO vs IPO vs KTO on identical setup |
+| `configs/dpo_config.yaml` | All hyperparameters |
 
-> Train preference-aligned language models using DPO on the **Anthropic HH-RLHF** dataset,  
-> with educational from-scratch implementations of **IPO** and **KTO** for direct comparison.
+---
 
-</div>
+## Datasets
 
+### Primary — `Anthropic/hh-rlhf` (helpful-base)
 
+Used by default in `train_dpo.py` and `compare_losses.py`.
 
-## ✨ Highlights
-
-- 🔧 **QLoRA (4-bit NF4 + LoRA)** — memory-efficient fine-tuning on consumer GPUs
-- 📐 **Three loss functions from scratch** — DPO, IPO, and KTO, fully hand-rolled
-- 📊 **Automated ablation runner** — identical setups, one command, W&B comparison table
-- 🏆 **GPT-4-as-judge eval** — optional pairwise win-rate scoring vs. base model
-- 🗂️ **Multi-dataset support** — HH-RLHF and UltraFeedback loaders included
-
-
-## 📁 Project Structure
-
-```
-dpo-alignment/
-├── train_dpo.py          # End-to-end DPO training pipeline
-├── dpo_loss.py           # DPO / IPO / KTO loss implementations (from scratch)
-├── data_utils.py         # HH-RLHF & UltraFeedback loaders and formatters
-├── eval.py               # Reward accuracy, margin & GPT-4 win-rate judge
-├── compare_losses.py     # Ablation: DPO vs IPO vs KTO on identical setup
-├── configs/
-│   └── dpo_config.yaml   # Hyperparameter configuration
-└── requirements.txt
+```python
+load_dataset("Anthropic/hh-rlhf", data_dir="helpful-base", split="train")
 ```
 
+| Property | Value |
+|----------|-------|
+| Source | Anthropic (human annotators) |
+| Size | ~43k preference pairs |
+| Format | `{"chosen": "Human: ...\n\nAssistant: ...", "rejected": "..."}` |
+| Download size | ~50 MB |
+| Access | Public, no approval needed |
 
+The `helpful-base` subset contains human preference judgments on helpfulness only,
+giving cleaner signal for a first training run than mixing helpful + harmless.
+
+### Alternative — `HuggingFaceH4/ultrafeedback_binarized`
+
+Higher-quality AI-annotated pairs (GPT-4 scored). Swap in via `data_utils.py`.
+
+```python
+# In train_dpo.py, replace:
+train_dataset, eval_dataset = load_hh_rlhf(...)
+# with:
+train_dataset, eval_dataset = load_ultrafeedback(...)
+```
+
+| Property | Value |
+|----------|-------|
+| Source | HuggingFace H4 team (GPT-4 annotations) |
+| Size | ~61k preference pairs |
+| Format | Conversation list, auto-formatted by `format_ultrafeedback_sample` |
+| Download size | ~200 MB |
+| Access | Public, no approval needed |
+
+Both datasets download automatically via HuggingFace `datasets` — no local files needed.
+
+---
 
 ## Setup
 
@@ -50,101 +68,80 @@ dpo-alignment/
 pip install -r requirements.txt
 ```
 
-> **GPU Requirements**
-> | Configuration | Minimum VRAM |
-> |---|---|
-> | Default (recommended) | ≥ 24 GB &nbsp;(A10G / A100 / RTX 3090) |
-> | Reduced (`batch_size=1`, `max_length=768`) | < 24 GB |
+**GPU requirement:** >= 24 GB VRAM (A10G / A100 / RTX 3090).
+For < 24 GB: set `per_device_train_batch_size: 1` and `max_length: 768` in the config.
 
+---
 
+## Usage
 
-## 🚀 Training
-
-#### Standard DPO (Mistral-7B + HH-RLHF + sigmoid loss)
+### 1. Train
 
 ```bash
 python train_dpo.py --config configs/dpo_config.yaml
 ```
 
-#### Switch loss type on the fly
+Trains Mistral-7B-Instruct on HH-RLHF helpful-base with sigmoid DPO loss.
+Logs reward accuracy, reward margin, and training loss to W&B.
+Saves LoRA adapter to `outputs/dpo_mistral/`.
 
-Edit `loss_type` inside `configs/dpo_config.yaml`:
+To switch loss type, edit `loss_type` in the config:
 
 ```yaml
-# options: "sigmoid" | "ipo" | "kto"
-loss_type: sigmoid
+loss_type: "ipo"      # or "kto_pair"
 ```
 
-#### Run the full ablation (DPO vs IPO vs KTO)
+### 2. Ablation — DPO vs IPO vs KTO
 
 ```bash
 python compare_losses.py --config configs/dpo_config.yaml
 ```
 
-Trains three identical models with different loss functions, logs all metrics to W&B, and prints a final summary table.
+Trains three models with identical hyperparameters, different loss functions,
+then prints a summary table:
 
+```
+Loss          Reward Acc   Reward Margin
+--------      ----------   -------------
+sigmoid           0.XXXX          X.XXXX
+ipo               0.XXXX          X.XXXX
+kto_pair          0.XXXX          X.XXXX
+```
 
+### 3. Inspect the data
 
-## Loss Functions
+```bash
+python data_utils.py
+```
 
-<details>
-<summary><strong>DPO — Standard Sigmoid Loss</strong></summary>
+Prints a sample prompt / chosen / rejected triple and dataset sizes.
 
-<br/>
-
-$$\mathcal{L}_{\text{DPO}} = -\mathbb{E}\!\left[\log\sigma\!\left(\beta\!\left(\log\frac{\pi_\theta(y_w \mid x)}{\pi_{\text{ref}}(y_w \mid x)} - \log\frac{\pi_\theta(y_l \mid x)}{\pi_{\text{ref}}(y_l \mid x)}\right)\right)\right]$$
-
-Maximises the margin between chosen and rejected log-ratio differences via a binary cross-entropy objective.
-
-</details>
-
-<details>
-<summary><strong>IPO — Identity / Squared Loss</strong></summary>
-
-<br/>
-
-$$\mathcal{L}_{\text{IPO}} = \left(\log\frac{\pi_\theta(y_w \mid x)}{\pi_{\text{ref}}(y_w \mid x)} - \log\frac{\pi_\theta(y_l \mid x)}{\pi_{\text{ref}}(y_l \mid x)} - \frac{1}{2\beta}\right)^{\!2}$$
-
-A theoretically grounded alternative that avoids over-optimisation by targeting a specific preference gap rather than maximising it unboundedly.
-
-</details>
-
-<details>
-<summary><strong>KTO — Prospect-Theoretic Loss</strong></summary>
-
-<br/>
-
-KTO aligns models using individual scalar reward signals (good / bad) rather than contrastive pairs, drawing on Kahneman-Tversky prospect theory to model human loss aversion.
-
-</details>
-
+---
 
 ## Evaluation Metrics
 
 | Metric | Description |
-|---|---|
-| **Reward Accuracy** | % of eval pairs where chosen reward > rejected reward |
-| **Reward Margin** | Mean( r_chosen − r_rejected ) across the eval set |
-| **Win Rate** | GPT-4-as-judge pairwise comparison vs. base model *(optional)* |
+|--------|-------------|
+| **Reward accuracy** | % of eval pairs where implicit chosen reward > rejected |
+| **Reward margin** | Mean(r_chosen - r_rejected); larger = better separation |
+| **Win rate** | GPT-4-as-judge vs. base model (optional, needs OpenAI key) |
 
-Run evaluation on a trained checkpoint:
+---
 
-```bash
-python eval.py --model_path ./outputs/dpo-checkpoint --config configs/dpo_config.yaml
-```
+## DPO Loss Reference
 
+**Standard DPO (sigmoid):**
 
-## 📚 References
+$$\mathcal{L} = -\mathbb{E}\left[\log\sigma\left(\beta\left(\log\frac{\pi_\theta(y_w|x)}{\pi_\text{ref}(y_w|x)} - \log\frac{\pi_\theta(y_l|x)}{\pi_\text{ref}(y_l|x)}\right)\right)\right]$$
 
-| Paper | Authors | Year |
-|---|---|---|
-| [Direct Preference Optimization: Your Language Model is Secretly a Reward Model](https://arxiv.org/abs/2305.18290) | Rafailov et al. | 2023 |
-| [A General Theoretical Paradigm to Understand Learning from Human Feedback (IPO)](https://arxiv.org/abs/2310.12036) | Azar et al. | 2023 |
-| [KTO: Model Alignment as Prospect Theoretic Optimization](https://arxiv.org/abs/2402.01306) | Ethayarajh et al. | 2023 |
+**IPO (identity — avoids reward over-optimisation):**
 
+$$\mathcal{L} = \left(\log\frac{\pi_\theta(y_w|x)}{\pi_\text{ref}(y_w|x)} - \log\frac{\pi_\theta(y_l|x)}{\pi_\text{ref}(y_l|x)} - \frac{1}{2\beta}\right)^2$$
 
+---
 
-<div align="center">
+## References
 
-
-</div>
+- Rafailov et al. (2023) *Direct Preference Optimization: Your Language Model is Secretly a Reward Model*
+- Azar et al. (2023) *A General Theoretical Paradigm to Understand Learning from Human Feedback (IPO)*
+- Ethayarajh et al. (2023) *KTO: Model Alignment as Prospect Theoretic Optimization*
