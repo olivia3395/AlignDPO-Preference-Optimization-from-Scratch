@@ -1,0 +1,43 @@
+# configs/dpo_config.yaml
+# ─────────────────────────────────────────────────
+# Model
+model_name: "mistralai/Mistral-7B-Instruct-v0.2"
+use_4bit: true
+bnb_4bit_compute_dtype: "float16"
+
+# LoRA
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+
+# DPO
+beta: 0.1                  # KL penalty; lower = more conservative updates
+max_prompt_length: 512
+max_length: 1024
+loss_type: "sigmoid"       # "sigmoid" | "ipo" | "kto_pair"
+
+# Training
+output_dir: "./outputs/dpo_mistral"
+num_train_epochs: 1
+per_device_train_batch_size: 2
+gradient_accumulation_steps: 4   # effective batch = 8
+learning_rate: 5.0e-5
+lr_scheduler_type: "cosine"
+warmup_ratio: 0.1
+fp16: true
+logging_steps: 10
+save_steps: 200
+eval_steps: 200
+seed: 42
+
+# W&B
+wandb_project: "dpo-alignment"
+run_name: "mistral-dpo-hh"
