@@ -17,7 +17,7 @@
 
 </div>
 
----
+
 
 ## ✨ Highlights
 
@@ -27,7 +27,6 @@
 - 🏆 **GPT-4-as-judge eval** — optional pairwise win-rate scoring vs. base model
 - 🗂️ **Multi-dataset support** — HH-RLHF and UltraFeedback loaders included
 
----
 
 ## 📁 Project Structure
 
@@ -43,9 +42,9 @@ dpo-alignment/
 └── requirements.txt
 ```
 
----
 
-## ⚙️ Setup
+
+## Setup
 
 ```bash
 pip install -r requirements.txt
@@ -57,7 +56,7 @@ pip install -r requirements.txt
 > | Default (recommended) | ≥ 24 GB &nbsp;(A10G / A100 / RTX 3090) |
 > | Reduced (`batch_size=1`, `max_length=768`) | < 24 GB |
 
----
+
 
 ## 🚀 Training
 
@@ -84,9 +83,9 @@ python compare_losses.py --config configs/dpo_config.yaml
 
 Trains three identical models with different loss functions, logs all metrics to W&B, and prints a final summary table.
 
----
 
-## 📐 Loss Functions
+
+## Loss Functions
 
 <details>
 <summary><strong>DPO — Standard Sigmoid Loss</strong></summary>
@@ -119,9 +118,8 @@ KTO aligns models using individual scalar reward signals (good / bad) rather tha
 
 </details>
 
----
 
-## 📊 Evaluation Metrics
+## Evaluation Metrics
 
 | Metric | Description |
 |---|---|
@@ -135,7 +133,6 @@ Run evaluation on a trained checkpoint:
 python eval.py --model_path ./outputs/dpo-checkpoint --config configs/dpo_config.yaml
 ```
 
----
 
 ## 📚 References
 
@@ -145,7 +142,7 @@ python eval.py --model_path ./outputs/dpo-checkpoint --config configs/dpo_config
 | [A General Theoretical Paradigm to Understand Learning from Human Feedback (IPO)](https://arxiv.org/abs/2310.12036) | Azar et al. | 2023 |
 | [KTO: Model Alignment as Prospect Theoretic Optimization](https://arxiv.org/abs/2402.01306) | Ethayarajh et al. | 2023 |
 
----
+
 
 <div align="center">
 
