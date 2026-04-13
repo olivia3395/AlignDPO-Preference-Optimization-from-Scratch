@@ -148,13 +148,11 @@ Prints a sample prompt / chosen / rejected triple and reports dataset sizes.
 
 Maximises the log-probability gap between chosen and rejected completions, regularised against a frozen reference policy.
 
-$$\mathcal{L}_{\text{DPO}} = -\mathbb{E}\!\left[\log\sigma\!\left(\beta\!\left(\log\frac{\pi_\theta(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)} - \log\frac{\pi_\theta(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)}\right)\right)\right]$$
+
 
 ### IPO — Identity Preference Optimization
 
 Replaces the sigmoid with a squared loss, directly targeting the preference gap and avoiding reward over-optimisation.
-
-$$\mathcal{L}_{\text{IPO}} = \left(\log\frac{\pi_\theta(y_w\mid x)}{\pi_{\text{ref}}(y_w\mid x)} - \log\frac{\pi_\theta(y_l\mid x)}{\pi_{\text{ref}}(y_l\mid x)} - \frac{1}{2\beta}\right)^{\!2}$$
 
 ### KTO — Kahneman-Tversky Optimization
 
