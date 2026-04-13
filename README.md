@@ -132,7 +132,7 @@ Prints a sample prompt / chosen / rejected triple and reports dataset sizes.
 
 
 
-## 📊 Evaluation Metrics
+## Evaluation Metrics
 
 | Metric | Description |
 |---|---|
@@ -159,35 +159,6 @@ Replaces the sigmoid with a squared loss, directly targeting the preference gap 
 Reframes alignment as prospect-theoretic utility maximisation. Unlike DPO/IPO, operates on **binary desirability labels** — no pairwise preferences required. See `dpo_loss.py` for the full derivation.
 
 
-
-## 📚 References
-
-<details>
-<summary><b>Rafailov et al. (2023)</b> &nbsp;·&nbsp; Direct Preference Optimization</summary>
-<br/>
-
-*Direct Preference Optimization: Your Language Model is Secretly a Reward Model*  
-Shows that the RLHF objective can be re-expressed as a simple binary cross-entropy loss over preference pairs, eliminating the need for explicit reward modelling.
-
-</details>
-
-<details>
-<summary><b>Azar et al. (2023)</b> &nbsp;·&nbsp; IPO</summary>
-<br/>
-
-*A General Theoretical Paradigm to Understand Learning from Human Feedback*  
-Introduces the identity-link loss variant that targets the preference gap directly and is more robust to reward over-optimisation.
-
-</details>
-
-<details>
-<summary><b>Ethayarajh et al. (2023)</b> &nbsp;·&nbsp; KTO</summary>
-<br/>
-
-*KTO: Model Alignment as Prospect Theoretic Optimization*  
-Applies Kahneman–Tversky utility theory to alignment; works without pairwise comparisons, only requiring per-response desirability labels.
-
-</details>
 
 
 
