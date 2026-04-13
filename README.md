@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🧠 DPO Alignment
+# 💡 DPO Alignment
 
 **Fine-tune causal LLMs with Direct Preference Optimization**
 
